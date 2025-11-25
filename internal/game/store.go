@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -60,6 +61,11 @@ type Game struct {
 	TurnIndex int
 	Started   bool
 	Finished  bool
+}
+
+type PlayerSession struct {
+	PlayerID string `json:"playerId"`
+	GameID   string `json:"gameId"`
 }
 
 /*
@@ -183,29 +189,97 @@ func (store *Store) NewGame() (*Game, error) {
 	return newGame, nil
 }
 
+func (store *Store) CreatePlayerSession(ctx context.Context, gameID string, playerID string) (string, error) {
+	if store.redis == nil {
+		return "", errors.New("redis_not_configured")
+	}
+
+	sessionToken := uuid.NewString()
+
+	session := PlayerSession{
+		PlayerID: playerID,
+		GameID:   gameID,
+	}
+
+	data, err := json.Marshal(session)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to serialize session.")
+		return "", err
+	}
+
+	redisKey := "session:" + sessionToken
+
+	// Sessão válida por 24 horas (pode ajustar)
+	err = store.redis.Set(ctx, redisKey, data, 24*time.Hour).Err()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to save session to Redis.")
+		return "", err
+	}
+
+	return sessionToken, nil
+}
+
 func (s *Store) Get(id string) *Game {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.games[id]
 }
 
-func (s *Store) Join(gameID, nickname string) (*Game, *Player, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (store *Store) Join(gameID, nickname string) (*Game, *Player, string, error) {
+	fmt.Println("JOIN REQUEST gameID:", gameID)
+	fmt.Println("AVAILABLE GAMES IN REDIS:")
 
-	g, ok := s.games[gameID]
-	if !ok {
-		return nil, nil, ErrGameNotFound
+	keys, _ := store.redis.Keys(ctx, "game:*").Result()
+	fmt.Println(keys)
+	ctx := context.Background()
+
+	// 1. Buscar jogo no Redis
+	redisKey := "game:" + gameID
+	gameJSON, err := store.redis.Get(ctx, redisKey).Bytes()
+	if err == redis.Nil {
+		fmt.Println("Game not found")
+		return nil, nil, "", ErrGameNotFound
 	}
-	if g.Started {
-		return nil, nil, ErrAlreadyStarted
+	if err != nil {
+		fmt.Println("Error getting game from Redis:", err)
+		return nil, nil, "", err
 	}
-	p := &Player{
+
+	// 2. Desserializar
+	var gameInstance Game
+	if err := json.Unmarshal(gameJSON, &gameInstance); err != nil {
+		return nil, nil, "", err
+	}
+
+	// 3. Verificar se já começou
+	if gameInstance.Started {
+		return nil, nil, "", ErrAlreadyStarted
+	}
+
+	// 4. Criar player
+	newPlayer := &Player{
 		ID:       uuid.NewString(),
 		Nickname: nickname,
 		Coins:    0,
 		Alive:    false,
 	}
-	g.Players = append(g.Players, p)
-	return g, p, nil
+	gameInstance.Players = append(gameInstance.Players, newPlayer)
+
+	// 5. Gerar token de sessão
+	sessionToken, err := store.CreatePlayerSession(ctx, gameID, newPlayer.ID)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// 6. Re-salvar o jogo no Redis
+	updatedJSON, err := json.Marshal(gameInstance)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	if err := store.redis.Set(ctx, redisKey, updatedJSON, 0).Err(); err != nil {
+		return nil, nil, "", err
+	}
+
+	return &gameInstance, newPlayer, sessionToken, nil
 }
