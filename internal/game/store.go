@@ -86,12 +86,14 @@ type PlayerPublicInfo struct {
 	Coins      int               `json:"coins"`
 	Alive      bool              `json:"alive"`
 	Influences []PublicInfluence `json:"influences"`
+	IsAdmin    bool              `json:"isAdmin"`
 }
 
 type PublicGameState struct {
 	GameID    string             `json:"gameID"`
 	JoinCode  string             `json:"joinCode"`
 	Started   bool               `json:"started"`
+	AdminID   string             `json:"adminID"`
 	Finished  bool               `json:"finished"`
 	TurnIndex int                `json:"turnIndex"`
 	Players   []PlayerPublicInfo `json:"players"`
@@ -119,6 +121,7 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 		Finished:  game.Finished,
 		TurnIndex: game.TurnIndex,
 		Players:   playersPublicInfo,
+		AdminID:   game.AdminID,
 	}
 }
 
@@ -273,19 +276,14 @@ func (s *Store) Get(id string) *Game {
 	return s.games[id]
 }
 
-func (store *Store) Join(gameID, nickname string) (*Game, *Player, string, error) {
-	fmt.Println("JOIN REQUEST gameID:", gameID)
-	fmt.Println("AVAILABLE GAMES IN REDIS:")
-
-	keys, _ := store.redis.Keys(ctx, "game:*").Result()
-	fmt.Println(keys)
+func (store *Store) Join(joinCode, nickname string) (*Game, *Player, string, error) {
 	ctx := context.Background()
 
-	// 1. Buscar jogo no Redis
-	redisKey := "game:" + gameID
-	gameJSON, err := store.redis.Get(ctx, redisKey).Bytes()
+	// 1. Buscar o GameID correspondente ao joinCode
+	joinKey := "joincode:" + joinCode
+	gameID, err := store.redis.Get(ctx, joinKey).Result()
 	if err == redis.Nil {
-		fmt.Println("Game not found")
+		fmt.Println("Redis key not found")
 		return nil, nil, "", ErrGameNotFound
 	}
 	if err != nil {
@@ -293,39 +291,52 @@ func (store *Store) Join(gameID, nickname string) (*Game, *Player, string, error
 		return nil, nil, "", err
 	}
 
-	// 2. Desserializar
+	// 2. Buscar o jogo no Redis
+	gameKey := "game:" + gameID
+	gameJSON, err := store.redis.Get(ctx, gameKey).Bytes()
+	if err == redis.Nil {
+		fmt.Println("Redis key not found for gameID:", gameID)
+		return nil, nil, "", ErrGameNotFound
+	}
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// 3. Desserializar o jogo
 	var gameInstance Game
 	if err := json.Unmarshal(gameJSON, &gameInstance); err != nil {
 		return nil, nil, "", err
 	}
 
-	// 3. Verificar se já começou
+	// 4. Validar se o jogo já começou
 	if gameInstance.Started {
 		return nil, nil, "", ErrAlreadyStarted
 	}
 
-	// 4. Criar player
-	newPlayer := &Player{
-		ID:       uuid.NewString(),
-		Nickname: nickname,
-		Coins:    0,
-		Alive:    false,
+	// 5. (Opcional) Verificar se o jogador já está na sala
+	for _, p := range gameInstance.Players {
+		if p.Nickname == nickname {
+			return nil, nil, "", errors.New("player_already_joined")
+		}
 	}
+
+	// 6. Criar novo jogador
+	newPlayer := buildNewPlayer(nickname)
 	gameInstance.Players = append(gameInstance.Players, newPlayer)
 
-	// 5. Gerar token de sessão
+	// 7. Criar a sessão (token)
 	sessionToken, err := store.CreatePlayerSession(ctx, gameID, newPlayer.ID)
 	if err != nil {
 		return nil, nil, "", err
 	}
 
-	// 6. Re-salvar o jogo no Redis
+	// 8. Re-salvar o jogo com o novo jogador
 	updatedJSON, err := json.Marshal(gameInstance)
 	if err != nil {
 		return nil, nil, "", err
 	}
 
-	if err := store.redis.Set(ctx, redisKey, updatedJSON, 0).Err(); err != nil {
+	if err := store.redis.Set(ctx, gameKey, updatedJSON, 0).Err(); err != nil {
 		return nil, nil, "", err
 	}
 

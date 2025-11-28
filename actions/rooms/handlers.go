@@ -63,10 +63,13 @@ func (controller *RoomsController) JoinRoom(ctx buffalo.Context) error {
 		}))
 	}
 
-	roomID := ctx.Param("gameID")
-	fmt.Println("Joining room with gameID=", roomID)
+	joinCode := ctx.Param("joinCode")
+	fmt.Println("Joining room with code=", joinCode)
 
-	game, player, sessionToken, err := controller.Store.Join(roomID, dto.Nickname)
+	game, player, sessionToken, err := controller.Store.Join(
+		joinCode,
+		dto.Nickname,
+	)
 	if err != nil {
 		return ctx.Render(400, renderer.JSON(map[string]any{
 			"error": err.Error(),
