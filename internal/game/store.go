@@ -34,10 +34,11 @@ const (
 )
 
 var (
-	ErrGameNotFound   = errors.New("game_not_found")
-	ErrAlreadyStarted = errors.New("game_already_started")
-	ErrNotStarted     = errors.New("game_not_started")
-	ErrInvalidAction  = errors.New("invalid_action")
+	ErrGameNotFound        = errors.New("game_not_found")
+	ErrAlreadyStarted      = errors.New("game_already_started")
+	ErrNotStarted          = errors.New("game_not_started")
+	ErrInvalidAction       = errors.New("invalid_action")
+	ErrPlayerAlreadyJoined = errors.New("Player already joined with this nickname")
 )
 
 type Influence struct {
@@ -316,66 +317,74 @@ func (store *Store) CreatePlayerSession(gameID string, playerID string) (string,
 func (store *Store) Join(joinCode, nickname string) (*Game, *Player, string, error) {
 	ctx := context.Background()
 
-	// 1. Buscar o GameID correspondente ao joinCode
 	joinKey := "joincode:" + joinCode
 	gameID, err := store.redis.Get(ctx, joinKey).Result()
 	if err == redis.Nil {
-		fmt.Println("Redis key not found")
 		return nil, nil, "", ErrGameNotFound
 	}
 	if err != nil {
-		fmt.Println("Error getting game from Redis:", err)
 		return nil, nil, "", err
 	}
 
-	// 2. Buscar o jogo no Redis
 	gameKey := "game:" + gameID
-	gameJSON, err := store.redis.Get(ctx, gameKey).Bytes()
-	if err == redis.Nil {
-		fmt.Println("Redis key not found for gameID:", gameID)
-		return nil, nil, "", ErrGameNotFound
-	}
-	if err != nil {
-		return nil, nil, "", err
-	}
 
-	// 3. Desserializar o jogo
-	var gameInstance Game
-	if err := json.Unmarshal(gameJSON, &gameInstance); err != nil {
-		return nil, nil, "", err
-	}
+	var joinedPlayer *Player
+	var finalGame Game
 
-	// 4. Validar se o jogo já começou
-	if gameInstance.Started {
-		return nil, nil, "", ErrAlreadyStarted
-	}
+	for {
+		err := store.redis.Watch(ctx, func(tx *redis.Tx) error {
+			gameJSON, err := tx.Get(ctx, gameKey).Bytes()
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to get game from Redis.")
+				return err
+			}
 
-	// 5. (Opcional) Verificar se o jogador já está na sala
-	for _, p := range gameInstance.Players {
-		if p.Nickname == nickname {
-			return nil, nil, "", errors.New("player_already_joined")
+			if err := json.Unmarshal(gameJSON, &finalGame); err != nil {
+				log.Error().Err(err).Msg("Failed to unmarshal game from Redis.")
+				return err
+			}
+
+			if finalGame.Started {
+				log.Error().Msg("Game already started.")
+				return ErrAlreadyStarted
+			}
+
+			for _, p := range finalGame.Players {
+				if p.Nickname == nickname {
+					log.Error().Err(err).Msg("Player already joined with this nickname.")
+					return ErrPlayerAlreadyJoined
+				}
+			}
+
+			joinedPlayer = buildNewPlayer(nickname)
+			finalGame.Players = append(finalGame.Players, joinedPlayer)
+
+			updatedJSON, _ := json.Marshal(finalGame)
+
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, gameKey, updatedJSON, 0)
+				return nil
+			})
+
+			return err
+		}, gameKey)
+
+		if err == redis.TxFailedErr {
+			continue
 		}
+
+		if err != nil {
+			return nil, nil, "", err
+		}
+
+		break
 	}
 
-	// 6. Criar novo jogador
-	newPlayer := buildNewPlayer(nickname)
-	gameInstance.Players = append(gameInstance.Players, newPlayer)
-
-	// 7. Criar a sessão (token)
-	sessionToken, err := store.CreatePlayerSession(gameID, newPlayer.ID)
+	sessionToken, err := store.CreatePlayerSession(gameID, joinedPlayer.ID)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to create player session.")
 		return nil, nil, "", err
 	}
 
-	// 8. Re-salvar o jogo com o novo jogador
-	updatedJSON, err := json.Marshal(gameInstance)
-	if err != nil {
-		return nil, nil, "", err
-	}
-
-	if err := store.redis.Set(ctx, gameKey, updatedJSON, 0).Err(); err != nil {
-		return nil, nil, "", err
-	}
-
-	return &gameInstance, newPlayer, sessionToken, nil
+	return &finalGame, joinedPlayer, sessionToken, nil
 }

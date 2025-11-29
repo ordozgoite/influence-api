@@ -1,7 +1,6 @@
 package rooms
 
 import (
-	"fmt"
 	"influence_game/internal/game"
 
 	"github.com/gobuffalo/buffalo"
@@ -20,16 +19,18 @@ func NewRoomsController(store *game.Store) *RoomsController {
 }
 
 func (controller *RoomsController) CreateRoom(ctx buffalo.Context) error {
-	log.Info().Msg("Creating new game...")
+	log.Info().Msg("Creating new game room.")
 	var dto CreateRoomDTO
 
 	if err := ctx.Bind(&dto); err != nil {
+		log.Error().Err(err).Msg("Failed to bind create room request.")
 		return ctx.Render(400, renderer.JSON(map[string]any{
 			"error": "invalid_json",
 		}))
 	}
 
 	if err := dto.Validate(); err != nil {
+		log.Error().Err(err).Msg("Failed to validate create room request.")
 		return ctx.Render(400, renderer.JSON(map[string]any{
 			"error": err.Error(),
 		}))
@@ -39,42 +40,49 @@ func (controller *RoomsController) CreateRoom(ctx buffalo.Context) error {
 
 	newGamePublicInfo, err := controller.Store.CreateGameRoom(nickname)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create new game.")
+		log.Error().Err(err).Msg("Failed to create new game room.")
 		return ctx.Render(500, renderer.JSON(map[string]any{
 			"error": err.Error(),
 		}))
 	}
+
+	log.Info().Msg("Created new game room successfully.")
+
 	return ctx.Render(200, renderer.JSON(newGamePublicInfo))
 }
 
 func (controller *RoomsController) JoinRoom(ctx buffalo.Context) error {
-	log.Info().Msg("Joining room...")
+	log.Info().Msg("Joining game room.")
 	var dto JoinRoomDTO
 
 	if err := ctx.Bind(&dto); err != nil {
+		log.Error().Err(err).Msg("Failed to bind join room request.")
 		return ctx.Render(400, renderer.JSON(map[string]any{
 			"error": "invalid_json",
 		}))
 	}
 
 	if err := dto.Validate(); err != nil {
+		log.Error().Err(err).Msg("Failed to validate join room request.")
 		return ctx.Render(400, renderer.JSON(map[string]any{
 			"error": err.Error(),
 		}))
 	}
 
 	joinCode := ctx.Param("joinCode")
-	fmt.Println("Joining room with code=", joinCode)
 
 	game, player, sessionToken, err := controller.Store.Join(
 		joinCode,
 		dto.Nickname,
 	)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to join game room.")
 		return ctx.Render(400, renderer.JSON(map[string]any{
 			"error": err.Error(),
 		}))
 	}
+
+	log.Info().Msg("Joined game room successfully.")
 
 	return ctx.Render(200, renderer.JSON(map[string]any{
 		"gameID":       game.ID,
