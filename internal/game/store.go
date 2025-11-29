@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,7 +85,6 @@ type PlayerPublicInfo struct {
 	Coins      int               `json:"coins"`
 	Alive      bool              `json:"alive"`
 	Influences []PublicInfluence `json:"influences"`
-	IsAdmin    bool              `json:"isAdmin"`
 }
 
 type PublicGameState struct {
@@ -103,15 +101,8 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 	playersPublicInfo := make([]PlayerPublicInfo, 0, len(game.Players))
 
 	for _, player := range game.Players {
-		playersPublicInfo = append(playersPublicInfo, PlayerPublicInfo{
-			ID:         player.ID,
-			Nickname:   player.Nickname,
-			Coins:      player.Coins,
-			Alive:      player.Alive,
-			Influences: []PublicInfluence{}, // TODO: Add influences public info
-		})
-
-		// Warning: Remember to retrieve user's own influences
+		playersPublicInfo = append(playersPublicInfo, getPublicPlayerInfo(player))
+		//  TODO: Retrieve user's own influences
 	}
 
 	return &PublicGameState{
@@ -125,101 +116,152 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 	}
 }
 
-func (g *Game) HandleAction(action ActionType, body json.RawMessage) error {
-	switch action {
-	case ActionStart:
-		if g.Started {
-			return ErrAlreadyStarted
-		}
-		if len(g.Players) < 2 {
-			return errors.New("need_at_least_two_players")
-		}
-		g.Started = true
-		for _, p := range g.Players {
-			p.Coins = 2
-			p.Alive = true
-		}
-		return nil
-	case ActionIncome:
-		if !g.Started {
-			return ErrNotStarted
-		}
-		cur := g.Players[g.TurnIndex%len(g.Players)]
-		if !cur.Alive {
-			g.TurnIndex = (g.TurnIndex + 1) % len(g.Players)
-			return nil
-		}
-		cur.Coins++
-		g.TurnIndex = (g.TurnIndex + 1) % len(g.Players)
-		return nil
-
-		// TODO: Implement other actions
-	default:
-		return ErrInvalidAction
+func getPublicPlayerInfo(player *Player) PlayerPublicInfo {
+	return PlayerPublicInfo{
+		ID:         player.ID,
+		Nickname:   player.Nickname,
+		Coins:      player.Coins,
+		Alive:      player.Alive,
+		Influences: []PublicInfluence{}, // TODO: Add influences public info
 	}
 }
 
-type Store struct {
-	mu    sync.RWMutex
-	games map[string]*Game
+// func (g *Game) HandleAction(action ActionType, body json.RawMessage) error {
+// 	switch action {
+// 	case ActionStart:
+// 		if g.Started {
+// 			return ErrAlreadyStarted
+// 		}
+// 		if len(g.Players) < 2 {
+// 			return errors.New("need_at_least_two_players")
+// 		}
+// 		g.Started = true
+// 		for _, p := range g.Players {
+// 			p.Coins = 2
+// 			p.Alive = true
+// 		}
+// 		return nil
+// 	case ActionIncome:
+// 		if !g.Started {
+// 			return ErrNotStarted
+// 		}
+// 		cur := g.Players[g.TurnIndex%len(g.Players)]
+// 		if !cur.Alive {
+// 			g.TurnIndex = (g.TurnIndex + 1) % len(g.Players)
+// 			return nil
+// 		}
+// 		cur.Coins++
+// 		g.TurnIndex = (g.TurnIndex + 1) % len(g.Players)
+// 		return nil
 
+// 		// TODO: Implement other actions
+// 	default:
+// 		return ErrInvalidAction
+// 	}
+// }
+
+type Store struct {
 	redis *redis.Client
 }
 
 func NewStore(redisClient *redis.Client) *Store {
 	return &Store{
-		games: make(map[string]*Game),
 		redis: redisClient,
 	}
 }
 
-func (store *Store) CreateGameRoom(adminNickname string) (*PublicGameState, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+type CreateRoomResult struct {
+	Game   *PublicGameState `json:"game"`
+	Player *Player          `json:"player"`
+	Token  string           `json:"token"`
+}
 
+func (store *Store) CreateGameRoom(adminNickname string) (*CreateRoomResult, error) {
 	adminPlayer := buildNewPlayer(adminNickname)
-	newGame := buildNewGame(adminPlayer)
-	store.games[newGame.ID] = newGame
 
-	if err := store.saveGameToRedis(newGame); err != nil {
+	newGame, err := store.buildNewGame(adminPlayer)
+	if err != nil {
 		return nil, err
 	}
 
-	newGamePublicInfo := newGame.GetPublicGameState()
+	if err := store.saveGameToRedis(newGame); err != nil {
+		ctx := context.Background()
+		_ = store.redis.Del(ctx, "joincode:"+newGame.JoinCode).Err()
+		return nil, err
+	}
 
-	return newGamePublicInfo, nil
+	sessionToken, err := store.CreatePlayerSession(newGame.ID, adminPlayer.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	publicState := newGame.GetPublicGameState()
+
+	return &CreateRoomResult{
+		Game:   publicState,
+		Player: adminPlayer,
+		Token:  sessionToken,
+	}, nil
 }
 
 func buildNewPlayer(nickname string) *Player {
 	return &Player{
-		ID:       uuid.NewString(),
-		Nickname: nickname,
-		Coins:    2,
-		Alive:    true,
+		ID:         uuid.NewString(),
+		Nickname:   nickname,
+		Coins:      2,
+		Alive:      true,
+		Influences: []Influence{},
 	}
 }
 
-func buildNewGame(adminPlayer *Player) *Game {
-	return &Game{
-		ID:        uuid.NewString(),
+func (store *Store) buildNewGame(adminPlayer *Player) (*Game, error) {
+	gameID := uuid.NewString()
+
+	joinCode, err := store.reserveJoinCode(gameID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate unique join code: %w", err)
+	}
+
+	game := &Game{
+		ID:        gameID,
 		CreatedAt: time.Now(),
 		Players:   []*Player{adminPlayer},
-		JoinCode:  generateJoinCode(),
+		JoinCode:  joinCode,
 		AdminID:   adminPlayer.ID,
 		TurnIndex: 0,
 		Started:   false,
 		Finished:  false,
 	}
+
+	return game, nil
 }
 
 const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-func generateJoinCode() string {
+func randomJoinCode() string {
 	b := make([]byte, 6)
 	for i := range b {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+func (store *Store) reserveJoinCode(gameID string) (string, error) {
+	ctx := context.Background()
+
+	for {
+		code := randomJoinCode()
+		key := "joincode:" + code
+
+		ok, err := store.redis.SetNX(ctx, key, gameID, JoinCodeTTL).Result()
+		if err != nil {
+			return "", err
+		}
+
+		if ok {
+			return code, nil
+		}
+	}
 }
 
 func (store *Store) saveGameToRedis(newGame *Game) error {
@@ -240,10 +282,12 @@ func (store *Store) saveGameToRedis(newGame *Game) error {
 	return nil
 }
 
-func (store *Store) CreatePlayerSession(ctx context.Context, gameID string, playerID string) (string, error) {
+func (store *Store) CreatePlayerSession(gameID string, playerID string) (string, error) {
 	if store.redis == nil {
 		return "", errors.New("redis_not_configured")
 	}
+
+	ctx := context.Background()
 
 	sessionToken := uuid.NewString()
 
@@ -260,20 +304,13 @@ func (store *Store) CreatePlayerSession(ctx context.Context, gameID string, play
 
 	redisKey := "session:" + sessionToken
 
-	// Sessão válida por 24 horas (pode ajustar)
-	err = store.redis.Set(ctx, redisKey, data, 24*time.Hour).Err()
+	err = store.redis.Set(ctx, redisKey, data, SessionDuration).Err()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to save session to Redis.")
 		return "", err
 	}
 
 	return sessionToken, nil
-}
-
-func (s *Store) Get(id string) *Game {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.games[id]
 }
 
 func (store *Store) Join(joinCode, nickname string) (*Game, *Player, string, error) {
@@ -325,7 +362,7 @@ func (store *Store) Join(joinCode, nickname string) (*Game, *Player, string, err
 	gameInstance.Players = append(gameInstance.Players, newPlayer)
 
 	// 7. Criar a sessão (token)
-	sessionToken, err := store.CreatePlayerSession(ctx, gameID, newPlayer.ID)
+	sessionToken, err := store.CreatePlayerSession(gameID, newPlayer.ID)
 	if err != nil {
 		return nil, nil, "", err
 	}
