@@ -2,6 +2,7 @@ package rooms
 
 import (
 	"influence_game/internal/game"
+	"strings"
 
 	"github.com/gobuffalo/buffalo"
 	"github.com/gobuffalo/buffalo/render"
@@ -85,4 +86,39 @@ func (controller *RoomsController) JoinRoom(ctx buffalo.Context) error {
 	log.Info().Msg("Joined game room successfully.")
 
 	return ctx.Render(200, renderer.JSON(onboardingResult))
+}
+
+func (controller *RoomsController) StartGame(ctx buffalo.Context) error {
+	log.Info().Msg("Starting game.")
+	gameID := ctx.Param("gameID")
+
+	authHeader := ctx.Request().Header.Get("Authorization")
+	const prefix = "Bearer "
+
+	if !strings.HasPrefix(authHeader, prefix) {
+		log.Error().Msg("Missing or invalid Authorization header.")
+		return ctx.Render(401, renderer.JSON(map[string]any{
+			"error": "missing or invalid Authorization header",
+		}))
+	}
+
+	sessionToken := strings.TrimPrefix(authHeader, prefix)
+	if sessionToken == "" {
+		log.Error().Msg("Empty bearer token.")
+		return ctx.Render(401, renderer.JSON(map[string]any{
+			"error": "empty bearer token",
+		}))
+	}
+
+	updatedGameState, err := controller.Store.StartGame(gameID, sessionToken)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start game.")
+		return ctx.Render(400, renderer.JSON(map[string]any{
+			"error": err.Error(),
+		}))
+	}
+
+	log.Info().Msg("Game started successfully.")
+
+	return ctx.Render(200, renderer.JSON(updatedGameState))
 }

@@ -34,11 +34,17 @@ const (
 )
 
 var (
-	ErrGameNotFound        = errors.New("game_not_found")
-	ErrAlreadyStarted      = errors.New("game_already_started")
-	ErrNotStarted          = errors.New("game_not_started")
-	ErrInvalidAction       = errors.New("invalid_action")
-	ErrPlayerAlreadyJoined = errors.New("Player already joined with this nickname")
+	ErrGameNotFound          = errors.New("game_not_found")
+	ErrAlreadyStarted        = errors.New("game_already_started")
+	ErrNotStarted            = errors.New("game_not_started")
+	ErrInvalidAction         = errors.New("invalid_action")
+	ErrPlayerAlreadyJoined   = errors.New("Player already joined with this nickname")
+	ErrGameAlreadyFinished   = errors.New("game_already_finished")
+	ErrOnlyAdminCanStartGame = errors.New("only_admin_can_start_game")
+	ErrNeedAtLeastTwoPlayers = errors.New("need_at_least_two_players")
+	ErrTooManyPlayers        = errors.New("too_many_players")
+	ErrInvalidSession        = errors.New("invalid_session")
+	ErrNotEnoughInfluences   = errors.New("not_enough_influences")
 )
 
 type Influence struct {
@@ -64,6 +70,8 @@ type Game struct {
 	TurnIndex int
 	Started   bool
 	Finished  bool
+
+	Deck []Influence `json:"deck"`
 }
 
 type PlayerSession struct {
@@ -89,13 +97,14 @@ type PlayerPublicInfo struct {
 }
 
 type PublicGameState struct {
-	GameID    string             `json:"gameID"`
-	JoinCode  string             `json:"joinCode"`
-	Started   bool               `json:"started"`
-	AdminID   string             `json:"adminID"`
-	Finished  bool               `json:"finished"`
-	TurnIndex int                `json:"turnIndex"`
-	Players   []PlayerPublicInfo `json:"players"`
+	GameID     string             `json:"gameID"`
+	JoinCode   string             `json:"joinCode"`
+	Started    bool               `json:"started"`
+	AdminID    string             `json:"adminID"`
+	Finished   bool               `json:"finished"`
+	TurnIndex  int                `json:"turnIndex"`
+	Players    []PlayerPublicInfo `json:"players"`
+	DeckLength int                `json:"deckLength"`
 }
 
 func (game *Game) GetPublicGameState() *PublicGameState {
@@ -107,13 +116,14 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 	}
 
 	return &PublicGameState{
-		GameID:    game.ID,
-		JoinCode:  game.JoinCode,
-		Started:   game.Started,
-		Finished:  game.Finished,
-		TurnIndex: game.TurnIndex,
-		Players:   playersPublicInfo,
-		AdminID:   game.AdminID,
+		GameID:     game.ID,
+		JoinCode:   game.JoinCode,
+		Started:    game.Started,
+		Finished:   game.Finished,
+		TurnIndex:  game.TurnIndex,
+		Players:    playersPublicInfo,
+		AdminID:    game.AdminID,
+		DeckLength: len(game.Deck),
 	}
 }
 
@@ -232,6 +242,7 @@ func (store *Store) buildNewGame(adminPlayer *Player) (*Game, error) {
 		TurnIndex: 0,
 		Started:   false,
 		Finished:  false,
+		Deck:      []Influence{},
 	}
 
 	return game, nil
@@ -391,4 +402,158 @@ func (store *Store) Join(joinCode, nickname string) (*OnboardingResult, error) {
 		Player: joinedPlayer,
 		Token:  sessionToken,
 	}, nil
+}
+
+func (store *Store) StartGame(gameID string, sessionToken string) (*PublicGameState, error) {
+	ctx := context.Background()
+
+	sessionKey := "session:" + sessionToken
+	sessionJSON, err := store.redis.Get(ctx, sessionKey).Bytes()
+	if err == redis.Nil {
+		return nil, ErrInvalidSession
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var session PlayerSession
+	if err := json.Unmarshal(sessionJSON, &session); err != nil {
+		log.Error().Err(err).Msg("Failed to unmarshal session from Redis.")
+		return nil, err
+	}
+
+	if session.GameID != gameID {
+		log.Error().Msg("Invalid session game ID.")
+		return nil, ErrInvalidSession
+	}
+
+	playerID := session.PlayerID
+
+	gameKey := "game:" + gameID
+
+	for {
+		err := store.redis.Watch(ctx, func(tx *redis.Tx) error {
+			gameJSON, err := tx.Get(ctx, gameKey).Bytes()
+			if err == redis.Nil {
+				log.Error().Msg("Game not found.")
+				return ErrGameNotFound
+			}
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to get game from Redis.")
+				return err
+			}
+
+			var game Game
+			if err := json.Unmarshal(gameJSON, &game); err != nil {
+				log.Error().Err(err).Msg("Failed to unmarshal game from Redis.")
+				return err
+			}
+
+			if game.Started {
+				log.Error().Msg("Game already started.")
+				return ErrAlreadyStarted
+			}
+			if game.Finished {
+				log.Error().Msg("Game already finished.")
+				return ErrGameAlreadyFinished
+			}
+
+			if game.AdminID != playerID {
+				log.Error().Msg("Only admin can start game.")
+				return ErrOnlyAdminCanStartGame
+			}
+
+			if len(game.Players) <= 2 {
+				log.Error().Msg("Need at least two players.")
+				return ErrNeedAtLeastTwoPlayers
+			}
+			if len(game.Players) >= 7 {
+				log.Error().Msg("Too many players.")
+				return ErrTooManyPlayers
+			}
+
+			game.Started = true
+			game.TurnIndex = 0
+			deck := NewBaseDeck()
+
+			rand.Shuffle(len(deck), func(i, j int) {
+				deck[i], deck[j] = deck[j], deck[i]
+			})
+
+			neededCards := len(game.Players) * 2
+			if neededCards > len(deck) {
+				log.Error().Msg("Not enough influences.")
+				return ErrNotEnoughInfluences
+			}
+
+			for _, p := range game.Players {
+				p.Coins = 2
+				p.Alive = true
+				p.Influences = make([]Influence, 0, 2)
+
+				p.Influences = append(p.Influences, deck[0], deck[1])
+
+				deck = deck[2:]
+			}
+
+			game.Deck = deck
+
+			updatedGameJSON, _ := json.Marshal(game)
+
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, gameKey, updatedGameJSON, 0)
+				return nil
+			})
+
+			return err
+		}, gameKey)
+
+		if err == redis.TxFailedErr {
+			log.Error().Msg("Transaction failed.")
+			continue
+		}
+
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to start game.")
+			return nil, err
+		}
+
+		break
+	}
+
+	updatedGameJSON, err := store.redis.Get(ctx, "game:"+gameID).Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	var game Game
+	if err := json.Unmarshal(updatedGameJSON, &game); err != nil {
+		return nil, err
+	}
+
+	return game.GetPublicGameState(), nil
+}
+
+func NewBaseDeck() []Influence {
+	return []Influence{
+		{Role: "Duke", Actions: []ActionType{ActionTax}},
+		{Role: "Duke", Actions: []ActionType{ActionTax}},
+		{Role: "Duke", Actions: []ActionType{ActionTax}},
+
+		{Role: "Assassin", Actions: []ActionType{ActionAssassinate}},
+		{Role: "Assassin", Actions: []ActionType{ActionAssassinate}},
+		{Role: "Assassin", Actions: []ActionType{ActionAssassinate}},
+
+		{Role: "Ambassador", Actions: []ActionType{ActionExchange}},
+		{Role: "Ambassador", Actions: []ActionType{ActionExchange}},
+		{Role: "Ambassador", Actions: []ActionType{ActionExchange}},
+
+		{Role: "Captain", Actions: []ActionType{ActionSteal}},
+		{Role: "Captain", Actions: []ActionType{ActionSteal}},
+		{Role: "Captain", Actions: []ActionType{ActionSteal}},
+
+		{Role: "Contessa", Actions: []ActionType{ActionBlockAssassinate}},
+		{Role: "Contessa", Actions: []ActionType{ActionBlockAssassinate}},
+		{Role: "Contessa", Actions: []ActionType{ActionBlockAssassinate}},
+	}
 }
