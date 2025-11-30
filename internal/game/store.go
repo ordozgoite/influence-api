@@ -111,8 +111,26 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 	playersPublicInfo := make([]PlayerPublicInfo, 0, len(game.Players))
 
 	for _, player := range game.Players {
-		playersPublicInfo = append(playersPublicInfo, getPublicPlayerInfo(player))
-		//  TODO: Retrieve user's own influences
+		if player.ID == game.AdminID {
+			influences := make([]PublicInfluence, 0, len(player.Influences))
+
+			for _, influence := range player.Influences {
+				influences = append(influences, PublicInfluence{
+					Role:     &influence.Role,
+					Revealed: influence.Revealed,
+				})
+			}
+
+			playersPublicInfo = append(playersPublicInfo, PlayerPublicInfo{
+				ID:         player.ID,
+				Nickname:   player.Nickname,
+				Coins:      player.Coins,
+				Alive:      player.Alive,
+				Influences: influences,
+			})
+		} else {
+			playersPublicInfo = append(playersPublicInfo, getPublicPlayerInfo(player))
+		}
 	}
 
 	return &PublicGameState{
@@ -128,12 +146,26 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 }
 
 func getPublicPlayerInfo(player *Player) PlayerPublicInfo {
+	influences := make([]PublicInfluence, 0, len(player.Influences))
+	for _, influence := range player.Influences {
+		if influence.Revealed {
+			influences = append(influences, PublicInfluence{
+				Role:     &influence.Role,
+				Revealed: influence.Revealed,
+			})
+		} else {
+			influences = append(influences, PublicInfluence{
+				Role:     nil,
+				Revealed: influence.Revealed,
+			})
+		}
+	}
 	return PlayerPublicInfo{
 		ID:         player.ID,
 		Nickname:   player.Nickname,
 		Coins:      player.Coins,
 		Alive:      player.Alive,
-		Influences: []PublicInfluence{}, // TODO: Add influences public info
+		Influences: influences,
 	}
 }
 
