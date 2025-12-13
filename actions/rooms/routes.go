@@ -10,5 +10,5 @@ func Register(app *buffalo.App, controller *RoomsController) {
 	// app.POST("/rooms/{joinCode}/leave", controller.LeaveRoom)
 
 	// In-game routes
-	app.POST("/rooms/{gameID}/actions/declare", controller.DeclareAction)
+	app.GET("/games/{gameID}/player/influences", controller.GetPlayerInfluences)
 }

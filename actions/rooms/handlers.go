@@ -179,3 +179,36 @@ func (controller *RoomsController) DeclareAction(ctx buffalo.Context) error {
 
 	return ctx.Render(200, renderer.JSON(currentGameState))
 }
+
+func (controller *RoomsController) GetPlayerInfluences(ctx buffalo.Context) error {
+	log.Info().Msg("Getting player influences.")
+	gameID := ctx.Param("gameID")
+
+	authHeader := ctx.Request().Header.Get("Authorization")
+	const prefix = "Bearer "
+
+	if !strings.HasPrefix(authHeader, prefix) {
+		log.Error().Msg("Missing or invalid Authorization header.")
+		return ctx.Render(401, renderer.JSON(map[string]any{
+			"error": "missing or invalid Authorization header",
+		}))
+	}
+
+	sessionToken := strings.TrimPrefix(authHeader, prefix)
+	if sessionToken == "" {
+		log.Error().Msg("Empty bearer token.")
+		return ctx.Render(401, renderer.JSON(map[string]any{
+			"error": "empty bearer token",
+		}))
+	}
+
+	playerInfluences, err := controller.Store.GetPlayerInfluences(gameID, sessionToken)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get player influences.")
+		return ctx.Render(400, renderer.JSON(map[string]any{
+			"error": err.Error(),
+		}))
+	}
+
+	return ctx.Render(200, renderer.JSON(playerInfluences))
+}

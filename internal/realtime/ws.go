@@ -58,3 +58,16 @@ func (m *RoomManager) Broadcast(gameID string, msg []byte) {
 		_ = c.Conn.WriteMessage(websocket.TextMessage, msg)
 	}
 }
+
+func (m *RoomManager) SendToPlayer(gameID string, playerID string, msg []byte) {
+	m.mu.RLock()
+	clients := m.rooms[gameID]
+	m.mu.RUnlock()
+
+	for _, c := range clients {
+		if c.PlayerID == playerID {
+			_ = c.Conn.WriteMessage(websocket.TextMessage, msg)
+			return
+		}
+	}
+}

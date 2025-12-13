@@ -42,6 +42,7 @@ func App() *buffalo.App {
 		app.Use(forceSSL())
 		app.Use(paramlogger.ParameterLogger)
 		app.Use(contenttype.Set("application/json"))
+		app.Use(translations())
 
 		// Rotas básicas
 		app.GET("/", HomeHandler)

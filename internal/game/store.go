@@ -58,6 +58,7 @@ var (
 	ErrTooManyPlayers        = errors.New("too_many_players")
 	ErrInvalidSession        = errors.New("invalid_session")
 	ErrNotEnoughInfluences   = errors.New("not_enough_influences")
+	ErrPlayerNotFound        = errors.New("player_not_found")
 )
 
 type Influence struct {
@@ -132,26 +133,7 @@ func (game *Game) GetPublicGameState() *PublicGameState {
 	playersPublicInfo := make([]PlayerPublicInfo, 0, len(game.Players))
 
 	for _, player := range game.Players {
-		if player.ID == game.AdminID {
-			influences := make([]PublicInfluence, 0, len(player.Influences))
-
-			for _, influence := range player.Influences {
-				influences = append(influences, PublicInfluence{
-					Role:     &influence.Role,
-					Revealed: influence.Revealed,
-				})
-			}
-
-			playersPublicInfo = append(playersPublicInfo, PlayerPublicInfo{
-				ID:         player.ID,
-				Nickname:   player.Nickname,
-				Coins:      player.Coins,
-				Alive:      player.Alive,
-				Influences: influences,
-			})
-		} else {
-			playersPublicInfo = append(playersPublicInfo, getPublicPlayerInfo(player))
-		}
+		playersPublicInfo = append(playersPublicInfo, getPublicPlayerInfo(player))
 	}
 
 	return &PublicGameState{
@@ -817,4 +799,56 @@ func buildActionType(action DeclareActionPayload) (*ActionType, error) {
 		return nil, errors.New("invalid_action_name")
 	}
 	return &actionType, nil
+}
+
+func (store *Store) GetPlayerInfluences(
+	gameID string,
+	sessionToken string,
+) ([]Influence, error) {
+	ctx := context.Background()
+
+	sessionKey := "session:" + sessionToken
+	sessionJSON, err := store.redis.Get(ctx, sessionKey).Bytes()
+	if err == redis.Nil {
+		return nil, ErrInvalidSession
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var session PlayerSession
+	if err := json.Unmarshal(sessionJSON, &session); err != nil {
+		return nil, err
+	}
+	if session.GameID != gameID {
+		return nil, ErrInvalidSession
+	}
+	actingPlayerID := session.PlayerID
+
+	gameKey := "game:" + gameID
+
+	gameJSON, err := store.redis.Get(ctx, gameKey).Bytes()
+	if err == redis.Nil {
+		return nil, ErrGameNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var game Game
+	if err := json.Unmarshal(gameJSON, &game); err != nil {
+		return nil, err
+	}
+
+	if !game.Started || game.Finished {
+		return nil, ErrNotStarted
+	}
+
+	for _, player := range game.Players {
+		if player.ID == actingPlayerID {
+			return player.Influences, nil
+		}
+	}
+
+	return nil, ErrPlayerNotFound
 }
