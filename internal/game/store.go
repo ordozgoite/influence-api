@@ -24,14 +24,16 @@ type ActionType struct {
 }
 
 type DeclareActionPayload struct {
-	ID              string      `json:"id"`
-	ActionName      string      `json:"actionName"`
-	ActorPlayerID   string      `json:"actorPlayerId"`
-	RequiresTarget  bool        `json:"requiresTarget"`
-	TargetPlayerID  *string     `json:"targetPlayerId,omitempty"`
-	IsImmediate     bool        `json:"isImmediate"`
-	BloackableRoles []Influence `json:"bloackableRoles"`
-	IsContestable   bool        `json:"isContestable"`
+	ID                   string   `json:"id"`
+	ActionName           string   `json:"actionName"`
+	ActorPlayerID        string   `json:"actorPlayerId"`
+	ActorPlayerNickname  string   `json:"actorPlayerNickname"`
+	RequiresTarget       bool     `json:"requiresTarget"`
+	TargetPlayerID       *string  `json:"targetPlayerId,omitempty"`
+	TargetPlayerNickname *string  `json:"targetPlayerNickname,omitempty"`
+	IsImmediate          bool     `json:"isImmediate"`
+	BlockableRoles       []string `json:"blockableRoles"`
+	IsContestable        bool     `json:"isContestable"`
 }
 
 // const (
@@ -646,23 +648,27 @@ func (store *Store) DeclareAction(
 			switch actionType.name {
 			case "income":
 				actionPayload = DeclareActionPayload{
-					ActionName:      "income",
-					ActorPlayerID:   actingPlayerID,
-					RequiresTarget:  false,
-					IsImmediate:     true,
-					BloackableRoles: []Influence{},
-					IsContestable:   false,
+					ID:                  uuid.New().String(),
+					ActionName:          "income",
+					ActorPlayerID:       actingPlayerID,
+					ActorPlayerNickname: turnPlayer.Nickname,
+					RequiresTarget:      false,
+					IsImmediate:         true,
+					BlockableRoles:      []string{},
+					IsContestable:       false,
 				}
 				turnPlayer.Coins++
 				game.TurnIndex = (game.TurnIndex + 1) % len(game.Players)
 			case "foreign_aid":
 				actionPayload = DeclareActionPayload{
-					ActionName:      "foreign_aid",
-					ActorPlayerID:   actingPlayerID,
-					RequiresTarget:  false,
-					IsImmediate:     false,
-					BloackableRoles: []Influence{{Role: "Duke"}},
-					IsContestable:   false,
+					ID:                  uuid.New().String(),
+					ActionName:          "foreign_aid",
+					ActorPlayerID:       actingPlayerID,
+					ActorPlayerNickname: turnPlayer.Nickname,
+					RequiresTarget:      false,
+					IsImmediate:         false,
+					BlockableRoles:      []string{"Duke"},
+					IsContestable:       false,
 				}
 				// Criar PendingAction para foreign aid
 				// Broad cast do PendingAction para todos os players
@@ -695,15 +701,17 @@ func (store *Store) DeclareAction(
 				if !targetPlayer.Influences[0].Revealed && !targetPlayer.Influences[1].Revealed {
 					// Criar evento pendente de golpe de estado (alvo deve escolher uma influência para revelar)
 				} else {
-					actionPayload = DeclareActionPayload{
-						ActionName:      "coup",
-						ActorPlayerID:   actingPlayerID,
-						RequiresTarget:  true,
-						TargetPlayerID:  actionType.targetPlayerID,
-						IsImmediate:     true,
-						BloackableRoles: []Influence{},
-						IsContestable:   false,
-					}
+					// actionPayload = DeclareActionPayload{
+					// 	ActionName:           "coup",
+					// 	ActorPlayerID:        actingPlayerID,
+					// 	ActorPlayerNickname:  turnPlayer.Nickname,
+					// 	RequiresTarget:       true,
+					// 	TargetPlayerID:       actionType.targetPlayerID,
+					// 	TargetPlayerNickname: targetPlayer.Nickname,
+					// 	IsImmediate:          true,
+					// 	BlockableRoles:       []string{},
+					// 	IsContestable:        false,
+					// }
 				}
 
 				turnPlayer.Coins -= 7
