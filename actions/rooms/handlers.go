@@ -37,7 +37,7 @@ func (controller *RoomsController) CreateRoom(ctx buffalo.Context) error {
 		}))
 	}
 
-	nickname := dto.Nickname
+	nickname := strings.ToLower(strings.TrimSpace(dto.Nickname))
 
 	newGamePublicInfo, err := controller.Store.CreateGameRoom(nickname)
 	if err != nil {
@@ -71,10 +71,11 @@ func (controller *RoomsController) JoinRoom(ctx buffalo.Context) error {
 	}
 
 	joinCode := ctx.Param("joinCode")
+	nickname := strings.ToLower(strings.TrimSpace(dto.Nickname))
 
 	onboardingResult, err := controller.Store.Join(
 		joinCode,
-		dto.Nickname,
+		nickname,
 	)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to join game room.")

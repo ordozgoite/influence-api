@@ -24,8 +24,14 @@ type ActionType struct {
 }
 
 type DeclareActionPayload struct {
-	ActionName     string  `json:"actionName"`
-	TargetPlayerID *string `json:"targetId,omitempty"`
+	ID              string      `json:"id"`
+	ActionName      string      `json:"actionName"`
+	ActorPlayerID   string      `json:"actorPlayerId"`
+	RequiresTarget  bool        `json:"requiresTarget"`
+	TargetPlayerID  *string     `json:"targetPlayerId,omitempty"`
+	IsImmediate     bool        `json:"isImmediate"`
+	BloackableRoles []Influence `json:"bloackableRoles"`
+	IsContestable   bool        `json:"isContestable"`
 }
 
 // const (
@@ -171,40 +177,6 @@ func getPublicPlayerInfo(player *Player) PlayerPublicInfo {
 		Influences: influences,
 	}
 }
-
-// func (g *Game) HandleAction(action ActionType, body json.RawMessage) error {
-// 	switch action {
-// 	case ActionStart:
-// 		if g.Started {
-// 			return ErrAlreadyStarted
-// 		}
-// 		if len(g.Players) < 2 {
-// 			return errors.New("need_at_least_two_players")
-// 		}
-// 		g.Started = true
-// 		for _, p := range g.Players {
-// 			p.Coins = 2
-// 			p.Alive = true
-// 		}
-// 		return nil
-// 	case ActionIncome:
-// 		if !g.Started {
-// 			return ErrNotStarted
-// 		}
-// 		cur := g.Players[g.TurnIndex%len(g.Players)]
-// 		if !cur.Alive {
-// 			g.TurnIndex = (g.TurnIndex + 1) % len(g.Players)
-// 			return nil
-// 		}
-// 		cur.Coins++
-// 		g.TurnIndex = (g.TurnIndex + 1) % len(g.Players)
-// 		return nil
-
-// 		// TODO: Implement other actions
-// 	default:
-// 		return ErrInvalidAction
-// 	}
-// }
 
 type Store struct {
 	redis *redis.Client
@@ -646,6 +618,7 @@ func (store *Store) DeclareAction(
 		return nil, err
 	}
 
+	var actionPayload DeclareActionPayload
 	for {
 		err := store.redis.Watch(ctx, func(tx *redis.Tx) error {
 			gameJSON, err := tx.Get(ctx, gameKey).Bytes()
@@ -670,13 +643,27 @@ func (store *Store) DeclareAction(
 				return fmt.Errorf("not_your_turn")
 			}
 
-			fmt.Println("actionType", actionType)
-
 			switch actionType.name {
 			case "income":
+				actionPayload = DeclareActionPayload{
+					ActionName:      "income",
+					ActorPlayerID:   actingPlayerID,
+					RequiresTarget:  false,
+					IsImmediate:     true,
+					BloackableRoles: []Influence{},
+					IsContestable:   false,
+				}
 				turnPlayer.Coins++
 				game.TurnIndex = (game.TurnIndex + 1) % len(game.Players)
 			case "foreign_aid":
+				actionPayload = DeclareActionPayload{
+					ActionName:      "foreign_aid",
+					ActorPlayerID:   actingPlayerID,
+					RequiresTarget:  false,
+					IsImmediate:     false,
+					BloackableRoles: []Influence{{Role: "Duke"}},
+					IsContestable:   false,
+				}
 				// Criar PendingAction para foreign aid
 				// Broad cast do PendingAction para todos os players
 			case "coup":
@@ -700,13 +687,23 @@ func (store *Store) DeclareAction(
 					return fmt.Errorf("target_player_not_found")
 				}
 
-				// Se o alvo não tiver nenhuma influência revelada, não pode ser morto
+				// Se o alvo não tiver mais nenhuma influência, não pode ser morto
 				if targetPlayer.Influences[0].Revealed && targetPlayer.Influences[1].Revealed {
 					return fmt.Errorf("target_player_is_dead")
 				}
 
 				if !targetPlayer.Influences[0].Revealed && !targetPlayer.Influences[1].Revealed {
 					// Criar evento pendente de golpe de estado (alvo deve escolher uma influência para revelar)
+				} else {
+					actionPayload = DeclareActionPayload{
+						ActionName:      "coup",
+						ActorPlayerID:   actingPlayerID,
+						RequiresTarget:  true,
+						TargetPlayerID:  actionType.targetPlayerID,
+						IsImmediate:     true,
+						BloackableRoles: []Influence{},
+						IsContestable:   false,
+					}
 				}
 
 				turnPlayer.Coins -= 7
@@ -733,13 +730,7 @@ func (store *Store) DeclareAction(
 			resultGame.GetPublicGameState(),
 			"action_declared",
 			map[string]any{
-				"actionName":      actionType.name,
-				"isImmediate":     actionType.isImmediate,
-				"isBlockable":     actionType.isBlockable,
-				"isContestable":   actionType.isContestable,
-				"requiresTarget":  actionType.requiresTarget,
-				"targetPlayerID":  actionType.targetPlayerID,
-				"bloackableRoles": actionType.bloackableRoles,
+				"actionPayload": actionPayload,
 			},
 		)
 
