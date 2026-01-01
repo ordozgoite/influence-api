@@ -5,180 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
-
-type ActionType struct {
-	name            string
-	isImmediate     bool
-	isBlockable     bool
-	isContestable   bool
-	requiresTarget  bool
-	bloackableRoles []Influence
-	targetPlayerID  *string
-}
-
-type DeclareActionPayload struct {
-	ID                   string   `json:"id"`
-	ActionName           string   `json:"actionName"`
-	ActorPlayerID        string   `json:"actorPlayerId"`
-	ActorPlayerNickname  string   `json:"actorPlayerNickname"`
-	RequiresTarget       bool     `json:"requiresTarget"`
-	TargetPlayerID       *string  `json:"targetPlayerId,omitempty"`
-	TargetPlayerNickname *string  `json:"targetPlayerNickname,omitempty"`
-	IsImmediate          bool     `json:"isImmediate"`
-	BlockableRoles       []string `json:"blockableRoles"`
-	IsContestable        bool     `json:"isContestable"`
-}
-
-// const (
-// 	ActionStart   ActionType = "start"
-// 	ActionEndTurn ActionType = "end_turn"
-
-// 	ActionIncome     ActionType = "income"
-// 	ActionForeignAid ActionType = "foreign_aid"
-// 	ActionCoup       ActionType = "coup"
-
-// 	ActionTax         ActionType = "tax"
-// 	ActionAssassinate ActionType = "assassinate"
-// 	ActionSteal       ActionType = "steal"
-// 	ActionExchange    ActionType = "exchange"
-
-// 	ActionBlockForeignAid  ActionType = "block_foreign_aid"
-// 	ActionBlockAssassinate ActionType = "block_assassinate"
-// 	ActionBlockSteal       ActionType = "block_steal"
-// )
-
-var (
-	ErrGameNotFound          = errors.New("game_not_found")
-	ErrAlreadyStarted        = errors.New("game_already_started")
-	ErrNotStarted            = errors.New("game_not_started")
-	ErrInvalidAction         = errors.New("invalid_action")
-	ErrPlayerAlreadyJoined   = errors.New("Player already joined with this nickname")
-	ErrGameAlreadyFinished   = errors.New("game_already_finished")
-	ErrOnlyAdminCanStartGame = errors.New("only_admin_can_start_game")
-	ErrNeedAtLeastTwoPlayers = errors.New("need_at_least_two_players")
-	ErrTooManyPlayers        = errors.New("too_many_players")
-	ErrInvalidSession        = errors.New("invalid_session")
-	ErrNotEnoughInfluences   = errors.New("not_enough_influences")
-	ErrPlayerNotFound        = errors.New("player_not_found")
-)
-
-type Influence struct {
-	Role     string `json:"role"`
-	Revealed bool   `json:"revealed"`
-}
-
-type Player struct {
-	ID         string      `json:"id"`
-	Nickname   string      `json:"nickname"`
-	Coins      int         `json:"coins"`
-	Alive      bool        `json:"alive"`
-	Influences []Influence `json:"influences"`
-}
-
-type Game struct {
-	ID        string
-	CreatedAt time.Time
-	AdminID   string
-	JoinCode  string
-	Players   []*Player
-	TurnIndex int
-	Started   bool
-	Finished  bool
-
-	Deck []Influence `json:"deck"`
-}
-
-type PlayerSession struct {
-	PlayerID string `json:"playerId"`
-	GameID   string `json:"gameId"`
-}
-
-/*
-⚠️ Warning:
-- this is a public representation of the influence, so it should not contain the role if it is not revealed
-*/
-type PublicInfluence struct {
-	Role     *string `json:"role,omitempty"`
-	Revealed bool    `json:"revealed"`
-}
-
-type PlayerPublicInfo struct {
-	ID         string            `json:"id"`
-	Nickname   string            `json:"nickname"`
-	Coins      int               `json:"coins"`
-	Alive      bool              `json:"alive"`
-	Influences []PublicInfluence `json:"influences"`
-}
-
-type PublicGameState struct {
-	GameID     string             `json:"gameID"`
-	JoinCode   string             `json:"joinCode"`
-	Started    bool               `json:"started"`
-	AdminID    string             `json:"adminID"`
-	Finished   bool               `json:"finished"`
-	TurnIndex  int                `json:"turnIndex"`
-	Players    []PlayerPublicInfo `json:"players"`
-	DeckLength int                `json:"deckLength"`
-}
-
-type PendingAction struct {
-	ID        string     `json:"id"`
-	ActorID   string     `json:"actorId"`
-	Action    ActionType `json:"action"`
-	TargetID  *string    `json:"targetId,omitempty"`
-	CreatedAt time.Time  `json:"createdAt"`
-	Status    string     `json:"status"` // "declared", "resolved", "canceled"...
-}
-
-func (game *Game) GetPublicGameState() *PublicGameState {
-	playersPublicInfo := make([]PlayerPublicInfo, 0, len(game.Players))
-
-	for _, player := range game.Players {
-		playersPublicInfo = append(playersPublicInfo, getPublicPlayerInfo(player))
-	}
-
-	return &PublicGameState{
-		GameID:     game.ID,
-		JoinCode:   game.JoinCode,
-		Started:    game.Started,
-		Finished:   game.Finished,
-		TurnIndex:  game.TurnIndex,
-		Players:    playersPublicInfo,
-		AdminID:    game.AdminID,
-		DeckLength: len(game.Deck),
-	}
-}
-
-func getPublicPlayerInfo(player *Player) PlayerPublicInfo {
-	influences := make([]PublicInfluence, 0, len(player.Influences))
-	for _, influence := range player.Influences {
-		if influence.Revealed {
-			influences = append(influences, PublicInfluence{
-				Role:     &influence.Role,
-				Revealed: influence.Revealed,
-			})
-		} else {
-			influences = append(influences, PublicInfluence{
-				Role:     nil,
-				Revealed: influence.Revealed,
-			})
-		}
-	}
-	return PlayerPublicInfo{
-		ID:         player.ID,
-		Nickname:   player.Nickname,
-		Coins:      player.Coins,
-		Alive:      player.Alive,
-		Influences: influences,
-	}
-}
 
 type Store struct {
 	redis *redis.Client
@@ -194,610 +25,45 @@ func (store *Store) GetRedis() *redis.Client {
 	return store.redis
 }
 
-type OnboardingResult struct {
-	Game   *PublicGameState `json:"game"`
-	Player *Player          `json:"player"`
-	Token  string           `json:"token"`
-}
-
-func (store *Store) CreateGameRoom(adminNickname string) (*OnboardingResult, error) {
-	adminPlayer := buildNewPlayer(adminNickname)
-
-	newGame, err := store.buildNewGame(adminPlayer)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := store.saveGameToRedis(newGame); err != nil {
-		ctx := context.Background()
-		_ = store.redis.Del(ctx, "joincode:"+newGame.JoinCode).Err()
-		return nil, err
-	}
-
-	sessionToken, err := store.CreatePlayerSession(newGame.ID, adminPlayer.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	publicState := newGame.GetPublicGameState()
-
-	return &OnboardingResult{
-		Game:   publicState,
-		Player: adminPlayer,
-		Token:  sessionToken,
-	}, nil
-}
-
-func buildNewPlayer(nickname string) *Player {
-	return &Player{
-		ID:         uuid.NewString(),
-		Nickname:   nickname,
-		Coins:      2,
-		Alive:      true,
-		Influences: []Influence{},
-	}
-}
-
-func (store *Store) buildNewGame(adminPlayer *Player) (*Game, error) {
-	gameID := uuid.NewString()
-
-	joinCode, err := store.reserveJoinCode(gameID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate unique join code: %w", err)
-	}
-
-	game := &Game{
-		ID:        gameID,
-		CreatedAt: time.Now(),
-		Players:   []*Player{adminPlayer},
-		JoinCode:  joinCode,
-		AdminID:   adminPlayer.ID,
-		TurnIndex: 0,
-		Started:   false,
-		Finished:  false,
-		Deck:      []Influence{},
-	}
-
-	return game, nil
-}
-
-const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-
-func randomJoinCode() string {
-	b := make([]byte, 6)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(b)
-}
-
-func (store *Store) reserveJoinCode(gameID string) (string, error) {
-	ctx := context.Background()
-
-	for {
-		code := randomJoinCode()
-		key := "joincode:" + code
-
-		ok, err := store.redis.SetNX(ctx, key, gameID, JoinCodeTTL).Result()
-		if err != nil {
-			return "", err
-		}
-
-		if ok {
-			return code, nil
-		}
-	}
-}
-
-func (store *Store) saveGameToRedis(newGame *Game) error {
-	serializedGame, err := json.Marshal(newGame)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to serialize game.")
-		return err
-	}
-
-	redisKey := "game:" + newGame.ID
-	ctx := context.Background()
-
-	if err := store.redis.Set(ctx, redisKey, serializedGame, 0).Err(); err != nil {
-		log.Error().Err(err).Msg("Failed to save game to Redis.")
-		return err
-	}
-
-	return nil
-}
-
-func (store *Store) CreatePlayerSession(gameID string, playerID string) (string, error) {
-	if store.redis == nil {
-		return "", errors.New("redis_not_configured")
-	}
-
-	ctx := context.Background()
-
-	sessionToken := uuid.NewString()
-
-	session := PlayerSession{
-		PlayerID: playerID,
-		GameID:   gameID,
-	}
-
-	data, err := json.Marshal(session)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to serialize session.")
-		return "", err
-	}
-
-	redisKey := "session:" + sessionToken
-
-	err = store.redis.Set(ctx, redisKey, data, SessionDuration).Err()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to save session to Redis.")
-		return "", err
-	}
-
-	return sessionToken, nil
-}
-
-func (store *Store) Join(joinCode, nickname string) (*OnboardingResult, error) {
-	ctx := context.Background()
-
-	joinKey := "joincode:" + joinCode
-	gameID, err := store.redis.Get(ctx, joinKey).Result()
-	if err == redis.Nil {
-		return nil, ErrGameNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	gameKey := "game:" + gameID
-
-	var joinedPlayer *Player
-	var finalGame Game
-
-	for {
-		err := store.redis.Watch(ctx, func(tx *redis.Tx) error {
-			gameJSON, err := tx.Get(ctx, gameKey).Bytes()
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to get game from Redis.")
-				return err
-			}
-
-			if err := json.Unmarshal(gameJSON, &finalGame); err != nil {
-				log.Error().Err(err).Msg("Failed to unmarshal game from Redis.")
-				return err
-			}
-
-			if finalGame.Started {
-				log.Error().Msg("Game already started.")
-				return ErrAlreadyStarted
-			}
-
-			for _, p := range finalGame.Players {
-				if p.Nickname == nickname {
-					log.Error().Err(err).Msg("Player already joined with this nickname.")
-					return ErrPlayerAlreadyJoined
-				}
-			}
-
-			joinedPlayer = buildNewPlayer(nickname)
-			finalGame.Players = append(finalGame.Players, joinedPlayer)
-
-			updatedJSON, _ := json.Marshal(finalGame)
-
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, gameKey, updatedJSON, 0)
-				return nil
-			})
-
-			return err
-		}, gameKey)
-
-		if err == redis.TxFailedErr {
-			continue
-		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		break
-	}
-
-	sessionToken, err := store.CreatePlayerSession(gameID, joinedPlayer.ID)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create player session.")
-		return nil, err
-	}
-
-	BroadcastEvent(
-		finalGame.GetPublicGameState(),
-		"player_joined",
-		map[string]any{
-			"newPlayer": joinedPlayer,
-		},
-	)
-
-	return &OnboardingResult{
-		Game:   finalGame.GetPublicGameState(),
-		Player: joinedPlayer,
-		Token:  sessionToken,
-	}, nil
-}
-
 func (store *Store) StartGame(gameID string, sessionToken string) (*PublicGameState, error) {
 	ctx := context.Background()
 
-	sessionKey := "session:" + sessionToken
-	sessionJSON, err := store.redis.Get(ctx, sessionKey).Bytes()
-	if err == redis.Nil {
-		log.Error().Msg("Session not found.")
-		return nil, ErrInvalidSession
-	}
+	session, err := store.resolveSession(ctx, gameID, sessionToken)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to get session from Redis.")
 		return nil, err
-	}
-
-	var session PlayerSession
-	if err := json.Unmarshal(sessionJSON, &session); err != nil {
-		log.Error().Err(err).Msg("Failed to unmarshal session from Redis.")
-		return nil, err
-	}
-
-	if session.GameID != gameID {
-		log.Error().Msg("Invalid session game ID.")
-		return nil, ErrInvalidSession
 	}
 
 	playerID := session.PlayerID
 
-	gameKey := "game:" + gameID
+	game, err := store.withGameLock(ctx, gameID, func(game *Game) error {
+		if game.Started {
+			return ErrAlreadyStarted
+		}
+		if game.Finished {
+			return ErrGameAlreadyFinished
+		}
+		if game.AdminID != playerID {
+			return ErrOnlyAdminCanStartGame
+		}
 
-	for {
-		err := store.redis.Watch(ctx, func(tx *redis.Tx) error {
-			gameJSON, err := tx.Get(ctx, gameKey).Bytes()
-			if err == redis.Nil {
-				log.Error().Msg("Game not found.")
-				return ErrGameNotFound
-			}
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to get game from Redis.")
-				return err
-			}
-
-			var game Game
-			if err := json.Unmarshal(gameJSON, &game); err != nil {
-				log.Error().Err(err).Msg("Failed to unmarshal game from Redis.")
-				return err
-			}
-
-			if game.Started {
-				log.Error().Msg("Game already started.")
-				return ErrAlreadyStarted
-			}
-			if game.Finished {
-				log.Error().Msg("Game already finished.")
-				return ErrGameAlreadyFinished
-			}
-
-			if game.AdminID != playerID {
-				log.Error().Msg("Only admin can start game.")
-				return ErrOnlyAdminCanStartGame
-			}
-
-			if len(game.Players) <= 2 {
-				log.Error().Msg("Need at least two players.")
-				return ErrNeedAtLeastTwoPlayers
-			}
-			if len(game.Players) >= 7 {
-				log.Error().Msg("Too many players.")
-				return ErrTooManyPlayers
-			}
-
-			game.Started = true
-			game.TurnIndex = rand.Intn(len(game.Players)) // Is it really random?
-			deck := NewBaseDeck()
-
-			rand.Shuffle(len(deck), func(i, j int) {
-				deck[i], deck[j] = deck[j], deck[i]
-			})
-
-			neededCards := len(game.Players) * 2
-			if neededCards > len(deck) {
-				log.Error().Msg("Not enough influences.")
-				return ErrNotEnoughInfluences
-			}
-
-			for _, p := range game.Players {
-				p.Coins = 2
-				p.Alive = true
-				p.Influences = make([]Influence, 0, 2)
-
-				p.Influences = append(p.Influences, deck[0], deck[1])
-
-				deck = deck[2:]
-			}
-
-			game.Deck = deck
-
-			updatedGameJSON, _ := json.Marshal(game)
-
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, gameKey, updatedGameJSON, 0)
-				return nil
-			})
-
+		if err := SetupNewGame(game); err != nil {
 			return err
-		}, gameKey)
-
-		if err == redis.TxFailedErr {
-			log.Error().Msg("Transaction failed.")
-			continue
 		}
 
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to start game.")
-			return nil, err
-		}
+		return nil
+	})
 
-		break
-	}
-
-	updatedGameJSON, err := store.redis.Get(ctx, "game:"+gameID).Bytes()
 	if err != nil {
-		return nil, err
-	}
-
-	var game Game
-	if err := json.Unmarshal(updatedGameJSON, &game); err != nil {
 		return nil, err
 	}
 
 	BroadcastEvent(
-		game.GetPublicGameState(),
+		ProjectPublicGameState(game),
 		"game_started",
 		nil,
 	)
 
-	return game.GetPublicGameState(), nil
-}
-
-func NewBaseDeck() []Influence {
-	return []Influence{
-		{Role: "Duke"},
-		{Role: "Duke"},
-		{Role: "Duke"},
-
-		{Role: "Assassin"},
-		{Role: "Assassin"},
-		{Role: "Assassin"},
-
-		{Role: "Ambassador"},
-		{Role: "Ambassador"},
-		{Role: "Ambassador"},
-
-		{Role: "Captain"},
-		{Role: "Captain"},
-		{Role: "Captain"},
-
-		{Role: "Contessa"},
-		{Role: "Contessa"},
-		{Role: "Contessa"},
-	}
-}
-
-func (store *Store) DeclareAction(
-	gameID string,
-	action DeclareActionPayload,
-	sessionToken string,
-) (*PublicGameState, error) {
-	ctx := context.Background()
-
-	sessionKey := "session:" + sessionToken
-	sessionJSON, err := store.redis.Get(ctx, sessionKey).Bytes()
-	if err == redis.Nil {
-		return nil, ErrInvalidSession
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var session PlayerSession
-	if err := json.Unmarshal(sessionJSON, &session); err != nil {
-		return nil, err
-	}
-	if session.GameID != gameID {
-		return nil, ErrInvalidSession
-	}
-	actingPlayerID := session.PlayerID
-
-	gameKey := "game:" + gameID
-
-	var resultGame Game
-	actionType, err := buildActionType(action)
-	if err != nil {
-		return nil, err
-	}
-
-	var actionPayload DeclareActionPayload
-	for {
-		err := store.redis.Watch(ctx, func(tx *redis.Tx) error {
-			gameJSON, err := tx.Get(ctx, gameKey).Bytes()
-			if err == redis.Nil {
-				return ErrGameNotFound
-			}
-			if err != nil {
-				return err
-			}
-
-			var game Game
-			if err := json.Unmarshal(gameJSON, &game); err != nil {
-				return err
-			}
-
-			if !game.Started || game.Finished {
-				return ErrNotStarted
-			}
-
-			turnPlayer := game.Players[game.TurnIndex]
-			if turnPlayer.ID != actingPlayerID {
-				return fmt.Errorf("not_your_turn")
-			}
-
-			switch actionType.name {
-			case "income":
-				actionPayload = DeclareActionPayload{
-					ID:                  uuid.New().String(),
-					ActionName:          "income",
-					ActorPlayerID:       actingPlayerID,
-					ActorPlayerNickname: turnPlayer.Nickname,
-					RequiresTarget:      false,
-					IsImmediate:         true,
-					BlockableRoles:      []string{},
-					IsContestable:       false,
-				}
-				turnPlayer.Coins++
-				game.TurnIndex = (game.TurnIndex + 1) % len(game.Players)
-			case "foreign_aid":
-				actionPayload = DeclareActionPayload{
-					ID:                  uuid.New().String(),
-					ActionName:          "foreign_aid",
-					ActorPlayerID:       actingPlayerID,
-					ActorPlayerNickname: turnPlayer.Nickname,
-					RequiresTarget:      false,
-					IsImmediate:         false,
-					BlockableRoles:      []string{"Duke"},
-					IsContestable:       false,
-				}
-				// Criar PendingAction para foreign aid
-				// Broad cast do PendingAction para todos os players
-			case "coup":
-				if turnPlayer.Coins < 7 {
-					return fmt.Errorf("not_enough_coins")
-				}
-
-				if actionType.targetPlayerID == nil {
-					return fmt.Errorf("missing_target_player")
-				}
-
-				var targetPlayer *Player
-				for i := range game.Players {
-					if game.Players[i].ID == *actionType.targetPlayerID {
-						targetPlayer = game.Players[i]
-						break
-					}
-				}
-
-				if targetPlayer == nil {
-					return fmt.Errorf("target_player_not_found")
-				}
-
-				// Se o alvo não tiver mais nenhuma influência, não pode ser morto
-				if targetPlayer.Influences[0].Revealed && targetPlayer.Influences[1].Revealed {
-					return fmt.Errorf("target_player_is_dead")
-				}
-
-				if !targetPlayer.Influences[0].Revealed && !targetPlayer.Influences[1].Revealed {
-					// Criar evento pendente de golpe de estado (alvo deve escolher uma influência para revelar)
-				} else {
-					// actionPayload = DeclareActionPayload{
-					// 	ActionName:           "coup",
-					// 	ActorPlayerID:        actingPlayerID,
-					// 	ActorPlayerNickname:  turnPlayer.Nickname,
-					// 	RequiresTarget:       true,
-					// 	TargetPlayerID:       actionType.targetPlayerID,
-					// 	TargetPlayerNickname: targetPlayer.Nickname,
-					// 	IsImmediate:          true,
-					// 	BlockableRoles:       []string{},
-					// 	IsContestable:        false,
-					// }
-				}
-
-				turnPlayer.Coins -= 7
-				game.TurnIndex = (game.TurnIndex + 1) % len(game.Players)
-			}
-
-			updatedJSON, _ := json.Marshal(&game)
-
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, gameKey, updatedJSON, 0)
-				return nil
-			})
-
-			if err != nil {
-				return err
-			}
-
-			// guardar cópia final pra retornar
-			resultGame = game
-			return nil
-		}, gameKey)
-
-		BroadcastEvent(
-			resultGame.GetPublicGameState(),
-			"action_declared",
-			map[string]any{
-				"actionPayload": actionPayload,
-			},
-		)
-
-		if err == redis.TxFailedErr {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		break
-	}
-
-	publicGameState := resultGame.GetPublicGameState()
-	return publicGameState, nil
-}
-
-func buildActionType(action DeclareActionPayload) (*ActionType, error) {
-	var actionType ActionType
-	switch action.ActionName {
-	case "income":
-		actionType = ActionType{
-			name:            "income",
-			isImmediate:     true,
-			isBlockable:     false,
-			isContestable:   false,
-			requiresTarget:  false,
-			targetPlayerID:  nil,
-			bloackableRoles: []Influence{},
-		}
-	case "foreign_aid":
-		actionType = ActionType{
-			name:           "foreign_aid",
-			isImmediate:    true,
-			isBlockable:    true,
-			isContestable:  false,
-			requiresTarget: false,
-			targetPlayerID: nil,
-			bloackableRoles: []Influence{
-				{Role: "Duke"},
-			},
-		}
-	case "coup":
-		if action.TargetPlayerID == nil {
-			return nil, errors.New("target_player_is_required")
-		}
-		actionType = ActionType{
-			name:            "coup",
-			isImmediate:     true,
-			isBlockable:     false,
-			isContestable:   false,
-			requiresTarget:  true,
-			targetPlayerID:  action.TargetPlayerID,
-			bloackableRoles: []Influence{},
-		}
-	// TODO: Add role actions (tax, assassinate, steal, exchange)
-	default:
-		return nil, errors.New("invalid_action_name")
-	}
-	return &actionType, nil
+	return ProjectPublicGameState(game), nil
 }
 
 func (store *Store) GetPlayerInfluences(
@@ -806,24 +72,13 @@ func (store *Store) GetPlayerInfluences(
 ) ([]Influence, error) {
 	ctx := context.Background()
 
-	sessionKey := "session:" + sessionToken
-	sessionJSON, err := store.redis.Get(ctx, sessionKey).Bytes()
-	if err == redis.Nil {
-		return nil, ErrInvalidSession
-	}
+	session, err := store.resolveSession(ctx, gameID, sessionToken)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to resolve session.")
 		return nil, err
 	}
 
-	var session PlayerSession
-	if err := json.Unmarshal(sessionJSON, &session); err != nil {
-		return nil, err
-	}
-	if session.GameID != gameID {
-		return nil, ErrInvalidSession
-	}
 	actingPlayerID := session.PlayerID
-
 	gameKey := "game:" + gameID
 
 	gameJSON, err := store.redis.Get(ctx, gameKey).Bytes()
@@ -851,3 +106,207 @@ func (store *Store) GetPlayerInfluences(
 
 	return nil, ErrPlayerNotFound
 }
+
+func getTurnPlayer(game *Game, actingPlayerID string) (*Player, error) {
+	turnPlayer := game.Players[game.TurnIndex]
+	if turnPlayer.ID != actingPlayerID {
+		return nil, fmt.Errorf("not_your_turn")
+	}
+	return turnPlayer, nil
+}
+
+func findPlayerByID(game *Game, playerID string) (*Player, error) {
+	for _, p := range game.Players {
+		if p.ID == playerID {
+			return p, nil
+		}
+	}
+	return nil, ErrPlayerNotFound
+}
+
+func advanceTurn(game *Game) {
+	game.TurnIndex = (game.TurnIndex + 1) % len(game.Players)
+}
+
+func validateActionContext(
+	game *Game,
+	actingPlayerID string,
+) (*Player, error) {
+
+	if !game.Started || game.Finished {
+		return nil, ErrNotStarted
+	}
+
+	return getTurnPlayer(game, actingPlayerID)
+}
+
+func (store *Store) DeclareAction(
+	gameID string,
+	action DeclareActionPayload,
+	sessionToken string,
+) (*PublicGameState, error) {
+
+	ctx := context.Background()
+
+	session, err := store.resolveSession(ctx, gameID, sessionToken)
+	if err != nil {
+		return nil, err
+	}
+
+	actingPlayerID := session.PlayerID
+
+	var resultGame *Game
+	var actionPayload DeclareActionPayload
+
+	resultGame, err = store.withGameLock(ctx, gameID, func(game *Game) error {
+
+		turnPlayer, err := validateActionContext(game, actingPlayerID)
+		if err != nil {
+			return err
+		}
+
+		actionPayload, err = applyAction(game, turnPlayer, action)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	BroadcastEvent(
+		ProjectPublicGameState(resultGame),
+		"action_declared",
+		map[string]any{
+			"actionPayload": actionPayload,
+		},
+	)
+
+	return ProjectPublicGameState(resultGame), nil
+}
+
+func applyAction(
+	game *Game,
+	actor *Player,
+	action DeclareActionPayload,
+) (DeclareActionPayload, error) {
+
+	switch action.ActionName {
+	case "income":
+		return declareIncome(game, actor), nil
+
+	case "foreign_aid":
+		return declareForeignAid(actor), nil
+
+	case "coup":
+		if action.TargetPlayerID == nil {
+			return DeclareActionPayload{}, ErrPlayerNotFound
+		}
+
+		target, err := findPlayerByID(game, *action.TargetPlayerID)
+		if err != nil {
+			return DeclareActionPayload{}, err
+		}
+
+		return declareCoup(game, actor, target)
+
+	default:
+		return DeclareActionPayload{}, errors.New("invalid_action_name")
+	}
+}
+
+func declareIncome(game *Game, player *Player) DeclareActionPayload {
+	player.Coins++
+	advanceTurn(game)
+
+	return DeclareActionPayload{
+		ID:                  uuid.New().String(),
+		ActionName:          "income",
+		ActorPlayerID:       player.ID,
+		ActorPlayerNickname: player.Nickname,
+		RequiresTarget:      false,
+		IsImmediate:         true,
+		BlockableRoles:      []string{},
+		IsContestable:       false,
+	}
+}
+
+func declareForeignAid(player *Player) DeclareActionPayload {
+	return DeclareActionPayload{
+		ID:                  uuid.New().String(),
+		ActionName:          "foreign_aid",
+		ActorPlayerID:       player.ID,
+		ActorPlayerNickname: player.Nickname,
+		RequiresTarget:      false,
+		IsImmediate:         false,
+		BlockableRoles:      []string{"Duke"},
+		IsContestable:       false,
+	}
+}
+
+func declareCoup(game *Game, actor *Player, target *Player) (DeclareActionPayload, error) {
+	if actor.Coins < 7 {
+		return DeclareActionPayload{}, fmt.Errorf("not_enough_coins")
+	}
+
+	if !target.Alive {
+		return DeclareActionPayload{}, fmt.Errorf("target_player_is_dead")
+	}
+
+	actor.Coins -= 7
+	advanceTurn(game)
+
+	return DeclareActionPayload{
+		ID:                   uuid.New().String(),
+		ActionName:           "coup",
+		ActorPlayerID:        actor.ID,
+		ActorPlayerNickname:  actor.Nickname,
+		RequiresTarget:       true,
+		TargetPlayerID:       &target.ID,
+		TargetPlayerNickname: &target.Nickname,
+		IsImmediate:          true,
+		BlockableRoles:       []string{},
+		IsContestable:        false,
+	}, nil
+}
+
+// func (store *Store) BlockAction(
+// 	gameID string,
+// 	actionID string,
+// 	blockingRole string,
+// 	sessionToken string,
+// ) (*PublicGameState, error) {
+// 	ctx := context.Background()
+
+// 	session, err := store.resolveSession(ctx, gameID, sessionToken)
+// 	if err != nil {
+// 		log.Error().Err(err).Msg("Failed to resolve session.")
+// 		return nil, err
+// 	}
+
+// 	blockingPlayerID := session.PlayerID
+// 	gameKey := "game:" + gameID
+
+// 	var game Game
+// 	if err := json.Unmarshal(gameJSON, &game); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if !game.Started || game.Finished {
+// 		return nil, ErrNotStarted
+// 	}
+
+// 	// TODO:
+// 	// Procurar PendingAction com o actionID
+// 	// Se o PendingAction não existir, retornar erro
+// 	// Se o PendingAction existir, verificar se o blockingRole é válido
+// 	// Se o blockingRole for válido, criar pending action de bloqueio
+// 	// Se o blockingRole for inválido, retornar erro
+// 	// Atualizar o game com o novo PendingAction
+// 	// Retornar o novo game
+
+// 	return game.GetPublicGameState(), nil
+// }

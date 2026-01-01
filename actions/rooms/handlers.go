@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"errors"
 	"influence_game/internal/game"
 	"strings"
 
@@ -89,25 +90,30 @@ func (controller *RoomsController) JoinRoom(ctx buffalo.Context) error {
 	return ctx.Render(200, renderer.JSON(onboardingResult))
 }
 
-func (controller *RoomsController) StartGame(ctx buffalo.Context) error {
-	log.Info().Msg("Starting game.")
-	gameID := ctx.Param("gameID")
-
+func getSessionToken(ctx buffalo.Context) (string, error) {
 	authHeader := ctx.Request().Header.Get("Authorization")
 	const prefix = "Bearer "
 
 	if !strings.HasPrefix(authHeader, prefix) {
-		log.Error().Msg("Missing or invalid Authorization header.")
-		return ctx.Render(401, renderer.JSON(map[string]any{
-			"error": "missing or invalid Authorization header",
-		}))
+		return "", errors.New("missing or invalid authorization header")
 	}
 
-	sessionToken := strings.TrimPrefix(authHeader, prefix)
-	if sessionToken == "" {
-		log.Error().Msg("Empty bearer token.")
+	token := strings.TrimPrefix(authHeader, prefix)
+	if token == "" {
+		return "", errors.New("empty bearer token")
+	}
+
+	return token, nil
+}
+
+func (controller *RoomsController) StartGame(ctx buffalo.Context) error {
+	log.Info().Msg("Starting game.")
+	gameID := ctx.Param("gameID")
+
+	sessionToken, err := getSessionToken(ctx)
+	if err != nil {
 		return ctx.Render(401, renderer.JSON(map[string]any{
-			"error": "empty bearer token",
+			"error": err.Error(),
 		}))
 	}
 
@@ -143,24 +149,12 @@ func (controller *RoomsController) DeclareAction(ctx buffalo.Context) error {
 		}))
 	}
 
-	authHeader := ctx.Request().Header.Get("Authorization")
-	const prefix = "Bearer "
-
-	if !strings.HasPrefix(authHeader, prefix) {
-		log.Error().Msg("Missing or invalid Authorization header.")
+	sessionToken, err := getSessionToken(ctx)
+	if err != nil {
 		return ctx.Render(401, renderer.JSON(map[string]any{
-			"error": "missing or invalid Authorization header",
+			"error": err.Error(),
 		}))
 	}
-
-	sessionToken := strings.TrimPrefix(authHeader, prefix)
-	if sessionToken == "" {
-		log.Error().Msg("Empty bearer token.")
-		return ctx.Render(401, renderer.JSON(map[string]any{
-			"error": "empty bearer token",
-		}))
-	}
-
 	currentGameState, err := controller.Store.DeclareAction(
 		gameID,
 		game.DeclareActionPayload{
@@ -185,21 +179,10 @@ func (controller *RoomsController) GetPlayerInfluences(ctx buffalo.Context) erro
 	log.Info().Msg("Getting player influences.")
 	gameID := ctx.Param("gameID")
 
-	authHeader := ctx.Request().Header.Get("Authorization")
-	const prefix = "Bearer "
-
-	if !strings.HasPrefix(authHeader, prefix) {
-		log.Error().Msg("Missing or invalid Authorization header.")
+	sessionToken, err := getSessionToken(ctx)
+	if err != nil {
 		return ctx.Render(401, renderer.JSON(map[string]any{
-			"error": "missing or invalid Authorization header",
-		}))
-	}
-
-	sessionToken := strings.TrimPrefix(authHeader, prefix)
-	if sessionToken == "" {
-		log.Error().Msg("Empty bearer token.")
-		return ctx.Render(401, renderer.JSON(map[string]any{
-			"error": "empty bearer token",
+			"error": err.Error(),
 		}))
 	}
 
@@ -213,3 +196,47 @@ func (controller *RoomsController) GetPlayerInfluences(ctx buffalo.Context) erro
 
 	return ctx.Render(200, renderer.JSON(playerInfluences))
 }
+
+// func (controller *RoomsController) BlockAction(ctx buffalo.Context) error {
+// 	log.Info().Msg("Blocking action.")
+// 	gameID := ctx.Param("gameID")
+// 	actionID := ctx.Param("actionID")
+
+// 	var dto BlockActionDTO
+// 	if err := ctx.Bind(&dto); err != nil {
+// 		log.Error().Err(err).Msg("Failed to bind block action request.")
+// 		return ctx.Render(400, renderer.JSON(map[string]any{
+// 			"error": "invalid_json",
+// 		}))
+// 	}
+
+// 	if err := dto.Validate(); err != nil {
+// 		log.Error().Err(err).Msg("Failed to validate block action request.")
+// 		return ctx.Render(400, renderer.JSON(map[string]any{
+// 			"error": err.Error(),
+// 		}))
+// 	}
+
+// 	sessionToken, err := getSessionToken(ctx)
+// 	if err != nil {
+// 		return ctx.Render(401, renderer.JSON(map[string]any{
+// 			"error": err.Error(),
+// 		}))
+// 	}
+// 	currentGameState, err := controller.Store.BlockAction(
+// 		gameID,
+// 		actionID,
+// 		dto.BlockingRole,
+// 		sessionToken,
+// 	)
+// 	if err != nil {
+// 		log.Error().Err(err).Msg("Failed to block action.")
+// 		return ctx.Render(400, renderer.JSON(map[string]any{
+// 			"error": err.Error(),
+// 		}))
+// 	}
+
+// 	log.Info().Msg("Action blocked successfully.")
+
+// 	return ctx.Render(200, renderer.JSON(currentGameState))
+// }
